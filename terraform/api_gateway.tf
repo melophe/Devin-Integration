@@ -16,24 +16,14 @@ resource "aws_apigatewayv2_integration" "webhook_redmine" {
   integration_type       = "AWS_PROXY"
   integration_uri        = aws_lambda_function.webhook_redmine.invoke_arn
   payload_format_version = "2.0"
+
+  request_parameters = {
+    "overwrite:header.X-Amz-Invocation-Type" = "'Event'"
+  }
 }
 
 resource "aws_apigatewayv2_route" "webhook_redmine" {
   api_id    = aws_apigatewayv2_api.main.id
   route_key = "POST /webhook/redmine"
   target    = "integrations/${aws_apigatewayv2_integration.webhook_redmine.id}"
-}
-
-# POST /webhook/devin → Lambda B
-resource "aws_apigatewayv2_integration" "webhook_devin" {
-  api_id                 = aws_apigatewayv2_api.main.id
-  integration_type       = "AWS_PROXY"
-  integration_uri        = aws_lambda_function.webhook_devin.invoke_arn
-  payload_format_version = "2.0"
-}
-
-resource "aws_apigatewayv2_route" "webhook_devin" {
-  api_id    = aws_apigatewayv2_api.main.id
-  route_key = "POST /webhook/devin"
-  target    = "integrations/${aws_apigatewayv2_integration.webhook_devin.id}"
 }
