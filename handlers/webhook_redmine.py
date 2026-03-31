@@ -20,6 +20,11 @@ logger.setLevel(logging.INFO)
 
 _MENTION_RE = re.compile(r"@devin\s*(.*)", re.IGNORECASE | re.DOTALL)
 
+_TERMINAL = {"completed", "finished", "exit", "stopped", "failed", "error", "cancelled", "canceled", "suspended"}
+_SUCCESS = {"completed", "finished", "exit"}
+_POLL_INTERVAL = 180  # 3分
+_POLL_MAX = 5         # 最大5回（15分）
+
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     try:
@@ -73,12 +78,27 @@ async def _handle(event: dict[str, Any]) -> dict[str, Any]:
     session = await devin.create_session(prompt)
     session_id: str = session.get("session_id", "unknown")
 
-    # Redmineにコメント
-    comment = f"🤖 Devinを起動しました。\nSession ID: `{session_id}`\n作業完了後にこのチケットへ報告します。"
-    await redmine.add_comment(issue_id, comment)
-
+    # Redmineに起動通知
+    await redmine.add_comment(issue_id, f"Devinを起動しました。\nSession ID: `{session_id}`")
     logger.info("Devin起動完了: issue #%s, session %s", issue_id, session_id)
-    return _resp(200, {"session_id": session_id})
+
+    # ポーリング（3分×最大5回）
+    for i in range(_POLL_MAX):
+        await asyncio.sleep(_POLL_INTERVAL)
+        status = await devin.get_session_status(session_id)
+        logger.info("ポーリング %d回目: session %s status=%s", i + 1, session_id, status)
+
+        if status.lower() in _TERMINAL:
+            if status.lower() in _SUCCESS:
+                result = f"Devinの作業が完了しました。\nSession ID: `{session_id}`\nStatus: {status}"
+            else:
+                result = f"Devinの作業が終了しました。\nSession ID: `{session_id}`\nStatus: {status}"
+            await redmine.add_comment(issue_id, result)
+            return _resp(200, {"session_id": session_id, "status": status})
+
+    # タイムアウト
+    await redmine.add_comment(issue_id, f"Devinの作業が15分以内に完了しませんでした。\nSession ID: `{session_id}`\nDevinの画面で確認してください。")
+    return _resp(200, {"session_id": session_id, "status": "timeout"})
 
 
 def _verify_signature(event: dict[str, Any], secret: str) -> bool:
