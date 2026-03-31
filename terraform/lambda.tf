@@ -17,10 +17,6 @@ resource "aws_iam_role_policy_attachment" "lambda_basic" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
-resource "aws_iam_role_policy_attachment" "lambda_vpc" {
-  role       = aws_iam_role.lambda.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
-}
 
 # Lambda A が Worker Lambda を invoke できるポリシー
 resource "aws_iam_role_policy" "lambda_invoke_worker" {
@@ -45,7 +41,7 @@ data "archive_file" "lambda_zip" {
 locals {
   env_vars_webhook = {
     DEVIN_API_KEY          = var.devin_api_key
-    REDMINE_URL            = "http://${aws_instance.redmine.private_ip}:3000"
+    REDMINE_URL            = "http://${aws_instance.redmine.public_ip}:3000"
     REDMINE_API_KEY        = var.redmine_api_key
     WEBHOOK_SECRET         = var.webhook_secret
     WORKER_FUNCTION_NAME   = aws_lambda_function.worker.function_name
@@ -53,7 +49,7 @@ locals {
 
   env_vars_worker = {
     DEVIN_API_KEY   = var.devin_api_key
-    REDMINE_URL     = "http://${aws_instance.redmine.private_ip}:3000"
+    REDMINE_URL     = "http://${aws_instance.redmine.public_ip}:3000"
     REDMINE_API_KEY = var.redmine_api_key
   }
 }
@@ -68,11 +64,6 @@ resource "aws_lambda_function" "webhook_redmine" {
   runtime          = "python3.12"
   timeout          = 30
   memory_size      = 256
-
-  vpc_config {
-    subnet_ids         = [aws_subnet.private_a.id, aws_subnet.private_c.id]
-    security_group_ids = [aws_security_group.lambda.id]
-  }
 
   environment {
     variables = local.env_vars_webhook
@@ -89,11 +80,6 @@ resource "aws_lambda_function" "worker" {
   runtime          = "python3.12"
   timeout          = 900  # 15分
   memory_size      = 256
-
-  vpc_config {
-    subnet_ids         = [aws_subnet.private_a.id, aws_subnet.private_c.id]
-    security_group_ids = [aws_security_group.lambda.id]
-  }
 
   environment {
     variables = local.env_vars_worker
