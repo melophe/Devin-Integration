@@ -43,21 +43,31 @@ resource "aws_instance" "redmine" {
 
   associate_public_ip_address = true
 
-  user_data = <<-EOF
-    #!/bin/bash
-    yum update -y
-    yum install -y docker git
-    systemctl start docker
-    systemctl enable docker
-    usermod -aG docker ec2-user
+  user_data = <<EOF
+#!/bin/bash
+exec > /var/log/user-data.log 2>&1
 
-    # Docker Compose インストール
-    curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-    chmod +x /usr/local/bin/docker-compose
+yum update -y
+yum install -y docker git
+systemctl start docker
+systemctl enable docker
+usermod -aG docker ec2-user
 
-    # Redmine起動
-    mkdir -p /opt/redmine
-    cat > /opt/redmine/docker-compose.yml <<'COMPOSE'
+# Docker Compose v2 plugin
+mkdir -p /usr/local/lib/docker/cli-plugins
+curl -SL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64" -o /usr/local/lib/docker/cli-plugins/docker-compose
+chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+ln -s /usr/local/lib/docker/cli-plugins/docker-compose /usr/local/bin/docker-compose
+
+mkdir -p /opt/redmine
+
+cat > /opt/redmine/Dockerfile <<'DOCKERFILE'
+FROM redmine:5.1
+RUN apt-get update && apt-get install -y git
+RUN git clone https://github.com/suer/redmine_webhook /usr/src/redmine/plugins/redmine_webhook
+DOCKERFILE
+
+cat > /opt/redmine/docker-compose.yml <<'COMPOSE'
 version: '3'
 services:
   db:
@@ -88,16 +98,22 @@ volumes:
   redmine_data:
 COMPOSE
 
-    cat > /opt/redmine/Dockerfile <<'DOCKERFILE'
-FROM redmine:5.1
-RUN apt-get update && apt-get install -y git
-RUN git clone https://github.com/suer/redmine_webhook /usr/src/redmine/plugins/redmine_webhook
-DOCKERFILE
+cd /opt/redmine
+docker-compose up -d
 
-    cd /opt/redmine && docker-compose up -d
-    sleep 60
+# Redmineの起動を待つ（最大10分）
+for i in $(seq 1 20); do
+  sleep 30
+  if docker-compose exec -T redmine curl -sf http://localhost:3000 > /dev/null 2>&1; then
+    echo "Redmine is up"
     docker-compose exec -T redmine bundle exec rake redmine:plugins:migrate RAILS_ENV=production
-  EOF
+    break
+  fi
+  echo "Waiting for Redmine... attempt $i"
+done
+
+echo "user-data completed"
+EOF
 
   tags = { Name = "redmine-devin-redmine" }
 }

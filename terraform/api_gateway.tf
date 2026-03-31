@@ -17,9 +17,6 @@ resource "aws_apigatewayv2_integration" "webhook_redmine" {
   integration_uri        = aws_lambda_function.webhook_redmine.invoke_arn
   payload_format_version = "2.0"
 
-  request_parameters = {
-    "overwrite:header.X-Amz-Invocation-Type" = "'Event'"
-  }
 }
 
 resource "aws_apigatewayv2_route" "webhook_redmine" {
