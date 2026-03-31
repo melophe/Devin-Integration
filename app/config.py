@@ -14,6 +14,7 @@ class Config:
     redmine_api_key: str
     webhook_secret: str | None
     default_template: str
+    worker_function_name: str
 
 
 def load() -> Config:
@@ -24,6 +25,7 @@ def load() -> Config:
         redmine_api_key=_require("REDMINE_API_KEY"),
         webhook_secret=os.environ.get("WEBHOOK_SECRET"),
         default_template=os.environ.get("DEFAULT_TEMPLATE", "default.j2"),
+        worker_function_name=os.environ.get("WORKER_FUNCTION_NAME", "redmine-devin-worker"),
     )
 
 

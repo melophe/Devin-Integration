@@ -1,8 +1,7 @@
-"""Lambda A: Redmine Webhook受信 → @devin検知 → Devinセッション起動。"""
+"""Lambda A: Redmine Webhook受信 → @devin検知 → Workerを非同期起動して即200返す。"""
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import hmac
 import json
@@ -10,31 +9,17 @@ import logging
 import re
 from typing import Any
 
+import boto3
+
 from app.config import load
-from app.devin import DevinClient
-from app.prompt import build_prompt
-from app.redmine import RedmineClient
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 _MENTION_RE = re.compile(r"@devin\s*(.*)", re.IGNORECASE | re.DOTALL)
 
-_TERMINAL = {"completed", "finished", "exit", "stopped", "failed", "error", "cancelled", "canceled", "suspended"}
-_SUCCESS = {"completed", "finished", "exit"}
-_POLL_INTERVAL = 180  # 3分
-_POLL_MAX = 5         # 最大5回（15分）
-
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
-    try:
-        return asyncio.run(_handle(event))
-    except Exception as e:
-        logger.exception("予期しないエラー: %s", e)
-        return _resp(500, {"error": str(e)})
-
-
-async def _handle(event: dict[str, Any]) -> dict[str, Any]:
     cfg = load()
 
     # 署名検証
@@ -47,8 +32,6 @@ async def _handle(event: dict[str, Any]) -> dict[str, Any]:
     if not body:
         return _resp(400, {"error": "Invalid body"})
 
-    # Redmine Webhook のペイロード構造に対応
-    # コメント(journal)のあるイベントのみ処理
     journal = body.get("journal", {})
     notes: str = journal.get("notes", "")
 
@@ -59,46 +42,20 @@ async def _handle(event: dict[str, Any]) -> dict[str, Any]:
 
     mention_text = match.group(1).strip() or "このチケットの内容を確認して対応してください"
 
-    # チケットID取得
-    issue_payload = body.get("issue", {})
-    issue_id: int | None = issue_payload.get("id")
+    issue_id: int | None = body.get("issue", {}).get("id")
     if not issue_id:
         return _resp(400, {"error": "issue.id が見つかりません"})
 
-    # Redmineからチケット詳細を取得
-    redmine = RedmineClient(cfg.redmine_url, cfg.redmine_api_key)
-    issue = await redmine.get_issue(issue_id)
+    # Workerを非同期で起動（レスポンスを待たない）
+    payload = json.dumps({"issue_id": issue_id, "mention_text": mention_text})
+    boto3.client("lambda").invoke(
+        FunctionName=cfg.worker_function_name,
+        InvocationType="Event",
+        Payload=payload,
+    )
 
-    # プロンプト生成
-    prompt = build_prompt(issue, mention_text, cfg.default_template)
-    logger.info("プロンプト生成完了 (issue #%s, %d文字)", issue_id, len(prompt))
-
-    # Devinセッション起動
-    devin = DevinClient(cfg.devin_api_key, cfg.devin_api_base)
-    session = await devin.create_session(prompt)
-    session_id: str = session.get("session_id", "unknown")
-
-    # Redmineに起動通知
-    await redmine.add_comment(issue_id, f"Devinを起動しました。\nSession ID: `{session_id}`")
-    logger.info("Devin起動完了: issue #%s, session %s", issue_id, session_id)
-
-    # ポーリング（3分×最大5回）
-    for i in range(_POLL_MAX):
-        await asyncio.sleep(_POLL_INTERVAL)
-        status = await devin.get_session_status(session_id)
-        logger.info("ポーリング %d回目: session %s status=%s", i + 1, session_id, status)
-
-        if status.lower() in _TERMINAL:
-            if status.lower() in _SUCCESS:
-                result = f"Devinの作業が完了しました。\nSession ID: `{session_id}`\nStatus: {status}"
-            else:
-                result = f"Devinの作業が終了しました。\nSession ID: `{session_id}`\nStatus: {status}"
-            await redmine.add_comment(issue_id, result)
-            return _resp(200, {"session_id": session_id, "status": status})
-
-    # タイムアウト
-    await redmine.add_comment(issue_id, f"Devinの作業が15分以内に完了しませんでした。\nSession ID: `{session_id}`\nDevinの画面で確認してください。")
-    return _resp(200, {"session_id": session_id, "status": "timeout"})
+    logger.info("Worker起動: issue #%s", issue_id)
+    return _resp(200, {"message": "accepted", "issue_id": issue_id})
 
 
 def _verify_signature(event: dict[str, Any], secret: str) -> bool:
